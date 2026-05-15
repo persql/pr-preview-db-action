@@ -1,0 +1,144 @@
+name: PerSQL preview DB
+description: Claim a TTL-bounded branch on a PerSQL database for an ephemeral preview environment.
+author: PerSQL
+
+# Reusable composite action. Drops one HTTP call into a CI job's steps
+# to mint a branch-scoped database the rest of the job can write to,
+# with automatic cleanup driven by the branch TTL — no separate
+# teardown step required.
+#
+# Use case (per PR):
+#   - on: pull_request → run this action with branch = pr-${PR_NUMBER}
+#   - Migrations / smoke tests / preview app deploys can target the
+#     branch via the returned scoped token; they can't touch main.
+#   - When the PR closes, the branch sits idle and the TTL reaps it
+#     (default 24h, set ttl-seconds: 0 to keep until explicitly dropped).
+#
+# Bearer + namespace/database scope:
+#   - input.token must have claim_branch permission on input.database.
+#     Easiest: a namespace-wide admin token kept as repo secret
+#     PERSQL_TOKEN.
+#   - Output token is scoped to the claimed branch only — safe to pass
+#     to downstream steps that don't need anything else.
+
+branding:
+  icon: database
+  color: blue
+
+inputs:
+  token:
+    description: PerSQL API bearer token with claim_branch permission on `database`.
+    required: true
+  database:
+    description: Database to claim a branch on, as `<namespace>/<database-slug>`.
+    required: true
+  branch:
+    description: |
+      Branch ref to claim (idempotent — re-running the action on the same
+      ref refreshes the lease and resets the branch from the parent's
+      current state). Typically `pr-${{ github.event.pull_request.number }}`.
+    required: true
+  ttl-seconds:
+    description: |
+      Lease length in seconds (default 86400 = 1 day, max 30 days). After
+      this, an idle branch is automatically reaped — no teardown step needed.
+    required: false
+    default: "86400"
+  role:
+    description: Token role on the claimed branch — `read`, `write`, or `admin`.
+    required: false
+    default: write
+  api-url:
+    description: PerSQL API base URL.
+    required: false
+    default: https://api.persql.com
+
+outputs:
+  branch-ref:
+    description: The ref of the claimed branch (echo of `inputs.branch`).
+    value: ${{ steps.claim.outputs.branch-ref }}
+  token:
+    description: |
+      Scoped bearer token for the claimed branch. Masked in logs by
+      ::add-mask::. Expires at `expires-at`.
+    value: ${{ steps.claim.outputs.token }}
+  expires-at:
+    description: ISO-8601 timestamp when the branch lease expires.
+    value: ${{ steps.claim.outputs.expires-at }}
+  outcome:
+    description: '"created" on first claim, "reset" when reclaiming an existing ref.'
+    value: ${{ steps.claim.outputs.outcome }}
+
+runs:
+  using: composite
+  steps:
+    - id: claim
+      shell: bash
+      env:
+        PERSQL_TOKEN: ${{ inputs.token }}
+        PERSQL_DATABASE: ${{ inputs.database }}
+        PERSQL_BRANCH: ${{ inputs.branch }}
+        PERSQL_TTL: ${{ inputs.ttl-seconds }}
+        PERSQL_ROLE: ${{ inputs.role }}
+        PERSQL_API_URL: ${{ inputs.api-url }}
+      run: |
+        set -euo pipefail
+
+        ns="${PERSQL_DATABASE%%/*}"
+        db="${PERSQL_DATABASE#*/}"
+        if [ "$ns" = "$PERSQL_DATABASE" ] || [ -z "$db" ]; then
+          echo "::error::Expected database input as '<namespace>/<database>', got '${PERSQL_DATABASE}'" >&2
+          exit 1
+        fi
+
+        # Trim a trailing slash on api-url if someone passes one.
+        api="${PERSQL_API_URL%/}"
+
+        body=$(jq -nc \
+          --arg ref "$PERSQL_BRANCH" \
+          --argjson ttl "$PERSQL_TTL" \
+          --arg role "$PERSQL_ROLE" \
+          '{ref: $ref, ttlSec: $ttl, role: $role, purpose: "github-action:preview-db"}')
+
+        # -fsS: fail on HTTP >=400, silent progress, show error body.
+        # -w '\n%{http_code}': append status code on its own line so we
+        # can distinguish HTTP errors from envelope errors.
+        resp=$(curl -sS -X POST \
+          -H "Authorization: Bearer $PERSQL_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "$body" \
+          -w '\n%{http_code}' \
+          "$api/v1/db/$ns/$db/claim_branch")
+        status="${resp##*$'\n'}"
+        json="${resp%$'\n'*}"
+
+        if [ "$status" != "200" ]; then
+          err=$(printf '%s' "$json" | jq -r '.error // "request failed"' 2>/dev/null || echo "request failed")
+          echo "::error::claim_branch returned HTTP $status: $err" >&2
+          exit 1
+        fi
+
+        success=$(printf '%s' "$json" | jq -r '.success')
+        if [ "$success" != "true" ]; then
+          err=$(printf '%s' "$json" | jq -r '.error // "unknown error"')
+          echo "::error::claim_branch failed: $err" >&2
+          exit 1
+        fi
+
+        branch_ref=$(printf '%s' "$json" | jq -r '.data.branchRef')
+        token=$(printf '%s' "$json" | jq -r '.data.token')
+        expires_at=$(printf '%s' "$json" | jq -r '.data.expiresAt')
+        outcome=$(printf '%s' "$json" | jq -r '.data.outcome')
+
+        # Mask the scoped token so it doesn't appear in logs even if a
+        # later step echoes ${{ steps.claim.outputs.token }}.
+        echo "::add-mask::$token"
+
+        {
+          echo "branch-ref=$branch_ref"
+          echo "token=$token"
+          echo "expires-at=$expires_at"
+          echo "outcome=$outcome"
+        } >> "$GITHUB_OUTPUT"
+
+        echo "::notice::Claimed PerSQL branch '$branch_ref' on $ns/$db (outcome: $outcome, expires: $expires_at)"
