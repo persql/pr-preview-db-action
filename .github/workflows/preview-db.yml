@@ -1,0 +1,82 @@
+name: Preview DB
+
+# Dogfood: every PR to this repo claims a TTL-bounded PerSQL preview
+# branch via the action in this repo (uses: ./), proves the branch is
+# schema-only and write-isolated from the parent, then comments the
+# details on the PR. The branch self-reaps at its TTL -- no teardown.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    env:
+      NS: admin-5a08
+      DB: preview-demo
+      API: https://api.persql.com
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Claim PerSQL preview branch
+        id: persql
+        uses: ./
+        with:
+          token: ${{ secrets.PERSQL_TOKEN }}
+          database: admin-5a08/preview-demo
+          branch: pr-${{ github.event.pull_request.number }}
+          ttl-seconds: "3600"
+          role: write
+
+      - name: Prove schema-only + write isolation
+        id: prove
+        env:
+          BRANCH_TOKEN: ${{ steps.persql.outputs.token }}
+          BRANCH_REF: ${{ steps.persql.outputs.branch-ref }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          branch_db="${DB}-${BRANCH_REF}"
+          url="${API}/v1/db/${NS}/${branch_db}/query"
+          run_sql() {
+            local resp
+            resp=$(curl -sS -X POST \
+              -H "Authorization: Bearer ${BRANCH_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"sql\":$(jq -Rn --arg s "$1" '$s')}" \
+              "$url")
+            if [ "$(printf '%s' "$resp" | jq -r '.success')" != "true" ]; then
+              echo "::error::query failed: $resp" >&2
+              exit 1
+            fi
+            printf '%s' "$resp"
+          }
+          before=$(run_sql "select count(*) as n from todos" | jq -r '.data.rows[0][0]')
+          run_sql "insert into todos (title, done) values ('seeded by CI for PR #${PR}', 0)" >/dev/null
+          after=$(run_sql "select count(*) as n from todos" | jq -r '.data.rows[0][0]')
+          {
+            echo "branch_db=${branch_db}"
+            echo "rows_before=${before}"
+            echo "rows_after=${after}"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::Parent preview-demo holds 2 rows; branch ${branch_db} started with ${before} (schema only) and has ${after} after CI seed."
+
+      - name: Comment preview DB link on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ steps.persql.outputs.branch-ref }}
+          EXPIRES: ${{ steps.persql.outputs.expires-at }}
+          BRANCH_DB: ${{ steps.prove.outputs.branch_db }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          mins=$(( ( $(date -u -d "$EXPIRES" +%s) - $(date -u +%s) ) / 60 ))
+          url="https://console.persql.com/${NS}/databases/${BRANCH_DB}"
+          body=$(printf '### :seedling: Preview database ready\n\n**[Open `%s` in the console](%s)** -- browse and query the data for this PR.\n\nIsolated branch of `%s`; writes here never touch `main`. Expires in ~%s min, refreshes on every push.\n' \
+            "$REF" "$url" "$DB" "$mins")
+          # Update the bot's existing comment instead of stacking a new one each push.
+          gh pr comment "$PR" --edit-last --body "$body" 2>/dev/null || gh pr comment "$PR" --body "$body"
