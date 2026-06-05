@@ -35,8 +35,8 @@ inputs:
   branch:
     description: |
       Branch ref to claim (idempotent — re-running the action on the same
-      ref refreshes the lease and resets the branch from the parent's
-      current state). Typically `pr-${{ github.event.pull_request.number }}`.
+      ref refreshes the lease and resets the branch to the parent's
+      current schema). Typically `pr-${{ github.event.pull_request.number }}`.
     required: true
   ttl-seconds:
     description: |

@@ -54,7 +54,7 @@ jobs:
 | --- | --- | --- | --- |
 | `token` | yes | — | PerSQL bearer token with `claim_branch` permission on `database`. Usually `${{ secrets.PERSQL_TOKEN }}`. |
 | `database` | yes | — | Database path as `<namespace>/<database-slug>`. |
-| `branch` | yes | — | Branch ref to claim. Idempotent — re-running on the same ref refreshes the lease and resets the branch from the parent's current state. |
+| `branch` | yes | — | Branch ref to claim. Idempotent — re-running on the same ref refreshes the lease and resets the branch to the parent's current schema. |
 | `ttl-seconds` | no | `86400` | Lease length in seconds (max 30 days). Branch is auto-reaped after this. |
 | `role` | no | `write` | Role of the returned scoped token: `read`, `write`, or `admin`. |
 | `api-url` | no | `https://api.persql.com` | API base URL — point at staging for testing. |
@@ -70,11 +70,13 @@ jobs:
 
 ## Why a branch, not a fresh database?
 
-A PerSQL branch is a copy-on-write fork of `main` — it inherits the
-schema and (lazily) the data, costs nothing until it's queried, and
-the operations are uniform across the SDK and `/v1`. Spinning a fresh
-database per PR would mean re-applying migrations and re-seeding every
-time; branching skips both.
+A PerSQL branch carries the parent's **schema** — your tables and
+indexes, with empty data — so it provisions in milliseconds and you
+skip re-applying your migrations on every PR. Writes are isolated from
+`main`; seed test data with a fixture or migration step in the same
+job. You pay only for the requests the branch serves and the rows you
+write into it. Operations are uniform across the SDK and `/v1`, so the
+same code works against a branch or the parent.
 
 ## Cleanup
 
