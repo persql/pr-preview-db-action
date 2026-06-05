@@ -20,7 +20,7 @@ jobs:
       DB: preview-demo
       API: https://api.persql.com
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Claim PerSQL preview branch
         id: persql
@@ -65,18 +65,18 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "::notice::Parent preview-demo holds 2 rows; branch ${branch_db} started with ${before} (schema only) and has ${after} after CI seed."
 
-      - name: Comment preview DB details on the PR
+      - name: Comment preview DB link on the PR
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ steps.persql.outputs.branch-ref }}
-          OUTCOME: ${{ steps.persql.outputs.outcome }}
           EXPIRES: ${{ steps.persql.outputs.expires-at }}
           BRANCH_DB: ${{ steps.prove.outputs.branch_db }}
-          BEFORE: ${{ steps.prove.outputs.rows_before }}
-          AFTER: ${{ steps.prove.outputs.rows_after }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          body=$(printf '### PerSQL preview database ready :seedling:\n\n| | |\n|---|---|\n| Branch | `%s` (%s) |\n| Database | `%s/%s` |\n| Expires | %s |\n\nParent `preview-demo` holds **2** rows. This branch started with **%s** rows (schema only -- no parent data copied) and has **%s** after the CI seed step. Writes here never touch `main`, and the branch self-reaps when its TTL elapses -- no teardown step.\n' \
-            "$REF" "$OUTCOME" "$NS" "$BRANCH_DB" "$EXPIRES" "$BEFORE" "$AFTER")
-          gh pr comment "$PR" --body "$body"
+          mins=$(( ( $(date -u -d "$EXPIRES" +%s) - $(date -u +%s) ) / 60 ))
+          url="https://console.persql.com/${NS}/databases/${BRANCH_DB}"
+          body=$(printf '### :seedling: Preview database ready\n\n**[Open `%s` in the console](%s)** -- browse and query the data for this PR.\n\nIsolated branch of `%s`; writes here never touch `main`. Expires in ~%s min, refreshes on every push.\n' \
+            "$REF" "$url" "$DB" "$mins")
+          # Update the bot's existing comment instead of stacking a new one each push.
+          gh pr comment "$PR" --edit-last --body "$body" 2>/dev/null || gh pr comment "$PR" --body "$body"
