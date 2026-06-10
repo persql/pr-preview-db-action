@@ -57,6 +57,11 @@ outputs:
   branch-ref:
     description: The ref of the claimed branch (echo of `inputs.branch`).
     value: ${{ steps.claim.outputs.branch-ref }}
+  database-slug:
+    description: |
+      Slug of the branch database. Address it directly:
+      POST {api-url}/v1/db/<namespace>/<database-slug>/query.
+    value: ${{ steps.claim.outputs.database-slug }}
   token:
     description: |
       Scoped bearer token for the claimed branch. Masked in logs by
@@ -126,6 +131,7 @@ runs:
         fi
 
         branch_ref=$(printf '%s' "$json" | jq -r '.data.branchRef')
+        database_slug=$(printf '%s' "$json" | jq -r '.data.databaseSlug')
         token=$(printf '%s' "$json" | jq -r '.data.token')
         expires_at=$(printf '%s' "$json" | jq -r '.data.expiresAt')
         outcome=$(printf '%s' "$json" | jq -r '.data.outcome')
@@ -136,6 +142,7 @@ runs:
 
         {
           echo "branch-ref=$branch_ref"
+          echo "database-slug=$database_slug"
           echo "token=$token"
           echo "expires-at=$expires_at"
           echo "outcome=$outcome"

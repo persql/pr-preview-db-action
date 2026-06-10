@@ -64,6 +64,7 @@ jobs:
 | Output | Description |
 | --- | --- |
 | `branch-ref` | The ref of the claimed branch. |
+| `database-slug` | Slug of the branch database — address it as `/v1/db/<namespace>/<database-slug>/...`. |
 | `token` | Scoped bearer token for the branch (masked in logs via `::add-mask::`). |
 | `expires-at` | ISO-8601 timestamp when the lease expires. |
 | `outcome` | `created` on first claim, `reset` when reclaiming an existing ref. |
