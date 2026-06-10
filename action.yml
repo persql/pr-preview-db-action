@@ -22,8 +22,8 @@ author: PerSQL
 #     to downstream steps that don't need anything else.
 
 branding:
-  icon: database
-  color: blue
+  icon: git-pull-request
+  color: gray-dark
 
 inputs:
   token:
