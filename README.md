@@ -21,7 +21,7 @@ jobs:
 
       - name: Claim PerSQL branch
         id: persql
-        uses: persql/preview-db-action@v1
+        uses: persql/pr-preview-db-action@v1
         with:
           token: ${{ secrets.PERSQL_TOKEN }}
           database: acme/orders
